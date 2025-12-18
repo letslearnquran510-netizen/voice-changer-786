@@ -1,0 +1,7 @@
+{
+  "name": "Gemini Voice Morph",
+  "description": "Real-time AI voice transformation using Gemini Live API. Convert your voice into various personas with distinct accents and tones.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
