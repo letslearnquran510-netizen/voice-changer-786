@@ -15,14 +15,21 @@ export const SUPPORTED_LANGUAGES: LanguageOption[] = [
   { code: 'ru', name: 'Russian', flag: '🇷🇺' },
 ];
 
+// OPTIMIZED: Lower threshold = more sensitive = catches ALL words
+// 0.008 is very sensitive but still filters background noise
+export const DEFAULT_VAD_THRESHOLD = 0.008;
+
+export const DEFAULT_LANGUAGE: LanguageCode = 'en';
+
 const COMMON_RULES = `
 CORE DIRECTIVE: You are a VOCAL SHADOW. 
-LATENCY PROTOCOL: ZERO LATENCY MODE. Do not wait for complete sentences if the user pauses briefly. Respond immediately.
+LATENCY PROTOCOL: ZERO LATENCY MODE. Respond immediately without waiting.
 1. **STRICT REPETITION**: Repeat EXACTLY what the user says word-for-word. 
    - NEVER say "Okay," "I will," or "Hello." 
    - If the user says nothing, you say nothing.
 2. **MIRROR EMOTION**: 100% mimicry of pitch, volume, and emotional state.
 3. **NO ASSISTANT BEHAVIOR**: You have no personality other than being a voice mirror.
+4. **SPEED**: Match the user's speaking speed exactly.
 `;
 
 export const PERSONAS: Persona[] = [
@@ -104,6 +111,3 @@ export const PERSONAS: Persona[] = [
     - Slow and slightly labored breathing in character.`,
   },
 ];
-
-export const DEFAULT_LANGUAGE: LanguageCode = 'en';
-export const DEFAULT_VAD_THRESHOLD = 0.01;
