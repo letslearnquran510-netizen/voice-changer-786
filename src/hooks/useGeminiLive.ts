@@ -21,7 +21,40 @@ interface UseGeminiLiveReturn {
   recordingDuration: number;
 }
 
-export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProps): UseGeminiLiveReturn => {
+/**
+ * Ring buffer to store pre-trigger audio (captures start of words)
+ */
+class PreBuffer {
+  private buffers: Float32Array[] = [];
+  private maxBuffers: number;
+
+  constructor(maxBuffers: number = 8) {
+    this.maxBuffers = maxBuffers;
+  }
+
+  push(data: Float32Array): void {
+    const copy = new Float32Array(data.length);
+    copy.set(data);
+    this.buffers.push(copy);
+    
+    // Keep only last N buffers
+    while (this.buffers.length > this.maxBuffers) {
+      this.buffers.shift();
+    }
+  }
+
+  flush(): Float32Array[] {
+    const result = [...this.buffers];
+    this.buffers = [];
+    return result;
+  }
+
+  clear(): void {
+    this.buffers = [];
+  }
+}
+
+export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLiveProps): UseGeminiLiveReturn => {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
@@ -31,7 +64,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
 
-  // Refs for audio contexts
+  // Audio context refs
   const inputCtxRef = useRef<AudioContext | null>(null);
   const outputCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -41,18 +74,23 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   const sessionRef = useRef<Promise<any> | null>(null);
   const fileSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
-  // Recording refs
+  // Recording
   const recorderRef = useRef<AudioRecorder | null>(null);
   const startTimeRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // VAD threshold ref for real-time updates
+  // Pre-buffer for capturing start of words (CRITICAL for no missing audio)
+  const preBufferRef = useRef<PreBuffer | null>(null);
+
+  // VAD state refs
   const vadRef = useRef(vadThreshold);
+  const vadActiveRef = useRef(false);
+  const hangoverRef = useRef(0);
+
   useEffect(() => {
     vadRef.current = vadThreshold;
   }, [vadThreshold]);
 
-  // Cleanup timer on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -60,7 +98,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   }, []);
 
   /**
-   * Disconnect and cleanup all resources
+   * Disconnect and cleanup
    */
   const disconnect = useCallback(async () => {
     // Stop timer
@@ -69,7 +107,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       timerRef.current = null;
     }
 
-    // Stop recorder and get WAV blob
+    // Get recorded audio
     if (recorderRef.current) {
       const blob = recorderRef.current.stop();
       if (blob && blob.size > 44) {
@@ -78,43 +116,50 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       recorderRef.current = null;
     }
 
+    // Clear pre-buffer
+    if (preBufferRef.current) {
+      preBufferRef.current.clear();
+      preBufferRef.current = null;
+    }
+
     // Clear session
     sessionRef.current = null;
 
-    // Stop media stream
+    // Stop media
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(t => t.stop());
       mediaStreamRef.current = null;
     }
 
-    // Stop file source
     if (fileSourceRef.current) {
       try { fileSourceRef.current.stop(); } catch {}
       fileSourceRef.current.disconnect();
       fileSourceRef.current = null;
     }
 
-    // Disconnect audio nodes
     if (sourceRef.current) {
       sourceRef.current.disconnect();
       sourceRef.current = null;
     }
+    
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
     }
 
-    // Close audio contexts
     if (inputCtxRef.current?.state !== 'closed') {
       await inputCtxRef.current?.close().catch(() => {});
       inputCtxRef.current = null;
     }
+    
     if (outputCtxRef.current?.state !== 'closed') {
       await outputCtxRef.current?.close().catch(() => {});
       outputCtxRef.current = null;
     }
 
     // Reset state
+    vadActiveRef.current = false;
+    hangoverRef.current = 0;
     setStatus('disconnected');
     setAudioStream(null);
     setInputVolume(0);
@@ -122,7 +167,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   }, []);
 
   /**
-   * Connect and start voice transformation
+   * Connect and start processing
    */
   const connect = useCallback(async (persona: Persona, file?: File, language: LanguageCode = 'en') => {
     if (!apiKey) {
@@ -131,7 +176,6 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
     }
 
     try {
-      // Reset
       setAudioBlob(null);
       setRecordingDuration(0);
       setError(null);
@@ -141,7 +185,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       setStatus('connecting');
       setActivePersona(persona);
 
-      // Create audio contexts with optimal settings for LOW LATENCY
+      // Create contexts
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const inputCtx = new AudioCtx({ sampleRate: 16000 });
       const outputCtx = new AudioCtx({ sampleRate: 24000 });
@@ -150,15 +194,22 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       outputCtxRef.current = outputCtx;
       nextPlayTimeRef.current = 0;
 
-      // Initialize recorder (24kHz for output quality)
+      // Initialize recorder
       recorderRef.current = new AudioRecorder(24000);
 
-      // Setup audio source
+      // Initialize pre-buffer (stores ~250ms of audio before voice detected)
+      // This ensures we NEVER miss the start of words
+      preBufferRef.current = new PreBuffer(8);
+
+      // Reset VAD state
+      vadActiveRef.current = false;
+      hangoverRef.current = 0;
+
+      // Setup source
       let source: AudioNode;
       let visualizerStream: MediaStream;
 
       if (file) {
-        // File input mode
         const arrayBuf = await file.arrayBuffer();
         const audioBuf = await inputCtx.decodeAudioData(arrayBuf);
         const bufSrc = inputCtx.createBufferSource();
@@ -170,7 +221,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
         bufSrc.connect(dest);
         visualizerStream = dest.stream;
       } else {
-        // Microphone input mode
+        // Request high-quality audio capture
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             sampleRate: 16000,
@@ -206,17 +257,13 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
         callbacks: {
           onopen: () => {
             setStatus('connected');
-            
-            // Start recorder
             recorderRef.current?.start();
             
-            // Start duration timer
             startTimeRef.current = Date.now();
             timerRef.current = setInterval(() => {
               setRecordingDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
             }, 500);
             
-            // Start file playback if applicable
             fileSourceRef.current?.start(0);
           },
           
@@ -227,15 +274,14 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
               const ctx = outputCtxRef.current;
               
               try {
-                // Decode and play audio
                 const buffer = await decodeAudioData(decode(audioData), ctx, 24000, 1);
                 
-                // Record the output
+                // Record output
                 if (recorderRef.current) {
                   recorderRef.current.addChunk(audioBufferToFloat32(buffer));
                 }
                 
-                // Schedule playback
+                // Play audio
                 const now = ctx.currentTime;
                 const startTime = Math.max(nextPlayTimeRef.current, now);
                 
@@ -250,7 +296,6 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
               }
             }
 
-            // Reset timing on turn complete
             if (msg.serverContent?.turnComplete) {
               nextPlayTimeRef.current = 0;
             }
@@ -268,62 +313,96 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
 
       sessionRef.current = session;
 
-      // OPTIMIZED: Smaller buffer = lower latency (512 samples)
-      const processor = inputCtx.createScriptProcessor(512, 1, 1);
+      // CRITICAL: Audio processor with smart VAD
+      // Buffer size 256 = lowest latency while maintaining quality
+      const processor = inputCtx.createScriptProcessor(256, 1, 1);
       processorRef.current = processor;
 
-      // VAD state
-      let vadHangover = 0;
-      let vadActive = false;
-      const HANGOVER_MAX = 5; // ~160ms hangover for quick response
+      /**
+       * HANGOVER_FRAMES: How long to keep transmitting after voice stops
+       * Higher = no cut words, but slight delay
+       * 25 frames @ 256 samples @ 16kHz = ~400ms hangover
+       * This ensures we NEVER cut off the end of words
+       */
+      const HANGOVER_FRAMES = 25;
 
-      processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
-        
-        // Calculate RMS (fast method - sample every 4th)
-        let sum = 0;
-        const len = input.length;
-        for (let i = 0; i < len; i += 4) {
-          const v = input[i];
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / (len / 4));
-        setInputVolume(rms);
-
-        // Determine if we should transmit
-        let transmit = false;
-        
-        if (file) {
-          // File mode: always transmit
-          transmit = true;
-          setIsVadActive(true);
-        } else {
-          // Mic mode: use VAD
-          if (rms > vadRef.current) {
-            vadHangover = HANGOVER_MAX;
-            if (!vadActive) {
-              vadActive = true;
-              setIsVadActive(true);
-            }
-          } else if (vadHangover > 0) {
-            vadHangover--;
-          } else if (vadActive) {
-            vadActive = false;
-            setIsVadActive(false);
-          }
-          transmit = vadActive;
-        }
-
-        // Send to Gemini
-        if (transmit && sessionRef.current) {
-          const pcm = createPcmBlob(input, inputCtx.sampleRate);
+      /**
+       * Send audio data to Gemini
+       */
+      const sendAudio = (data: Float32Array) => {
+        if (sessionRef.current) {
+          const pcm = createPcmBlob(data, inputCtx.sampleRate);
           sessionRef.current
             .then(s => s.sendRealtimeInput({ media: pcm }))
             .catch(() => {});
         }
       };
 
-      // Connect processor (muted output to prevent feedback)
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        
+        // Calculate RMS volume (every sample for accuracy)
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) {
+          sum += input[i] * input[i];
+        }
+        const rms = Math.sqrt(sum / input.length);
+        setInputVolume(rms);
+
+        // File mode: always transmit everything
+        if (file) {
+          sendAudio(input);
+          setIsVadActive(true);
+          return;
+        }
+
+        // Mic mode: Smart VAD with pre-buffer
+        const threshold = vadRef.current;
+        const isVoice = rms > threshold;
+
+        if (isVoice) {
+          // Voice detected!
+          
+          if (!vadActiveRef.current) {
+            // TRANSITION: Silence -> Voice
+            // Send ALL pre-buffered audio first (this captures start of words!)
+            vadActiveRef.current = true;
+            setIsVadActive(true);
+            
+            const preBuffered = preBufferRef.current?.flush() || [];
+            for (const chunk of preBuffered) {
+              sendAudio(chunk);
+            }
+          }
+          
+          // Reset hangover counter
+          hangoverRef.current = HANGOVER_FRAMES;
+          
+          // Send current audio
+          sendAudio(input);
+          
+        } else {
+          // No voice detected
+          
+          if (vadActiveRef.current) {
+            // Was active, check hangover
+            if (hangoverRef.current > 0) {
+              // Still in hangover period - keep sending
+              hangoverRef.current--;
+              sendAudio(input);
+            } else {
+              // Hangover expired - stop transmitting
+              vadActiveRef.current = false;
+              setIsVadActive(false);
+            }
+          } else {
+            // Not active - store in pre-buffer for next word start
+            preBufferRef.current?.push(input);
+          }
+        }
+      };
+
+      // Connect (muted output)
       source.connect(processor);
       const gain = inputCtx.createGain();
       gain.gain.value = 0;
