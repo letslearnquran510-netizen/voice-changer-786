@@ -15,14 +15,6 @@ export interface AudioState {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
-export interface TranscriptItem {
-  id: string;
-  sender: 'user' | 'model';
-  text: string;
-  timestamp: Date;
-  isFinal: boolean;
-}
-
 export type LanguageCode = 'en' | 'hi' | 'ur' | 'ar' | 'es' | 'fr' | 'de' | 'zh' | 'ja' | 'ko' | 'pt' | 'ru';
 
 export interface LanguageOption {
