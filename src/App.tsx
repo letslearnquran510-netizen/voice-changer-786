@@ -7,7 +7,7 @@ import AudioVisualizer from './components/AudioVisualizer';
 
 type InputMode = 'mic' | 'file';
 
-// Format duration as MM:SS
+// Formaat duration as MM:SS
 const formatDuration = (seconds: number): string => {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
