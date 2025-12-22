@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { Persona, ConnectionStatus, TranscriptItem, LanguageCode } from '../types';
-import { createPcmBlob, decode, decodeAudioData } from '../utils/audio';
+import { Persona, ConnectionStatus, LanguageCode } from '../types';
+import { createPcmBlob, decode, decodeAudioData, AudioRecorder, audioBufferToFloat32 } from '../utils/audio';
 
 interface UseGeminiLiveProps {
   apiKey: string;
@@ -18,7 +18,7 @@ interface UseGeminiLiveReturn {
   inputVolume: number;
   isVadActive: boolean;
   downloadUrl: string | null;
-  transcripts: TranscriptItem[];
+  recordingDuration: number;
 }
 
 export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProps): UseGeminiLiveReturn => {
@@ -29,7 +29,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [isVadActive, setIsVadActive] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
+  const [recordingDuration, setRecordingDuration] = useState(0);
 
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -39,21 +39,25 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
   const nextStartTimeRef = useRef<number>(0);
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const fileSourceRef = useRef<AudioBufferSourceNode | null>(null);
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const recordingDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-
-  const transcriptsRef = useRef<TranscriptItem[]>([]);
-  const currentInputTextRef = useRef<string>('');
-  const currentOutputTextRef = useRef<string>('');
-  const currentInputIdRef = useRef<string>('');
-  const currentOutputIdRef = useRef<string>('');
+  
+  // WAV Audio Recorder
+  const audioRecorderRef = useRef<AudioRecorder | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+  const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const vadThresholdRef = useRef(vadThreshold);
   useEffect(() => {
     vadThresholdRef.current = vadThreshold;
   }, [vadThreshold]);
+
+  // Clean up duration interval
+  useEffect(() => {
+    return () => {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+    };
+  }, []);
 
   const disconnect = useCallback(async () => {
     setStatus('disconnected');
@@ -61,12 +65,24 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
     setInputVolume(0);
     setIsVadActive(false);
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    } else if (recordedChunksRef.current.length > 0) {
-      const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
-      const url = URL.createObjectURL(blob);
-      setDownloadUrl(url);
+    // Stop duration timer
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    }
+
+    // Stop audio recorder and get WAV file
+    if (audioRecorderRef.current) {
+      const wavBlob = audioRecorderRef.current.stop();
+      if (wavBlob && wavBlob.size > 44) { // More than just WAV header
+        // Revoke old URL if exists
+        if (downloadUrl) {
+          URL.revokeObjectURL(downloadUrl);
+        }
+        const url = URL.createObjectURL(wavBlob);
+        setDownloadUrl(url);
+      }
+      audioRecorderRef.current = null;
     }
 
     sessionPromiseRef.current = null;
@@ -107,7 +123,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       }
       outputAudioContextRef.current = null;
     }
-  }, []);
+  }, [downloadUrl]);
 
   const connect = useCallback(async (persona: Persona, file?: File, language: LanguageCode = 'en') => {
     if (!apiKey) {
@@ -116,14 +132,12 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
     }
 
     try {
+      // Reset state
+      if (downloadUrl) {
+        URL.revokeObjectURL(downloadUrl);
+      }
       setDownloadUrl(null);
-      recordedChunksRef.current = [];
-      setTranscripts([]);
-      transcriptsRef.current = [];
-      currentInputTextRef.current = '';
-      currentOutputTextRef.current = '';
-      currentInputIdRef.current = '';
-      currentOutputIdRef.current = '';
+      setRecordingDuration(0);
 
       await disconnect();
       setStatus('connecting');
@@ -138,26 +152,8 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       outputAudioContextRef.current = outputCtx;
       nextStartTimeRef.current = 0;
 
-      const dest = outputCtx.createMediaStreamDestination();
-      recordingDestRef.current = dest;
-
-      try {
-        const recorder = new MediaRecorder(dest.stream);
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) recordedChunksRef.current.push(e.data);
-        };
-        recorder.onstop = () => {
-          if (recordedChunksRef.current.length > 0) {
-            const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
-            const url = URL.createObjectURL(blob);
-            setDownloadUrl(url);
-          }
-        };
-        recorder.start();
-        mediaRecorderRef.current = recorder;
-      } catch (e) {
-        console.warn("Recorder failed to start:", e);
-      }
+      // Initialize WAV recorder (24kHz to match output)
+      audioRecorderRef.current = new AudioRecorder(24000);
 
       let source: AudioNode;
       let streamForVisualizer: MediaStream;
@@ -190,17 +186,6 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       setAudioStream(streamForVisualizer);
       sourceRef.current = source;
 
-      const updateTranscriptState = (id: string, text: string, sender: 'user' | 'model', isFinal: boolean) => {
-        const now = new Date();
-        const existingIndex = transcriptsRef.current.findIndex(t => t.id === id);
-        if (existingIndex >= 0) {
-          transcriptsRef.current[existingIndex] = { ...transcriptsRef.current[existingIndex], text, isFinal };
-        } else {
-          transcriptsRef.current.push({ id, sender, text, timestamp: now, isFinal });
-        }
-        setTranscripts([...transcriptsRef.current]);
-      };
-
       const ai = new GoogleGenAI({ apiKey });
       const systemInst = `${persona.systemInstruction} 
       Shadow the user's voice in ${language.toUpperCase()}.`;
@@ -211,12 +196,23 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: persona.voiceName } } },
           systemInstruction: systemInst,
-          inputAudioTranscription: {},
-          outputAudioTranscription: {}
         },
         callbacks: {
           onopen: () => {
             setStatus('connected');
+            
+            // Start recording
+            if (audioRecorderRef.current) {
+              audioRecorderRef.current.start();
+            }
+            
+            // Start duration timer
+            recordingStartTimeRef.current = Date.now();
+            durationIntervalRef.current = setInterval(() => {
+              const elapsed = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000);
+              setRecordingDuration(elapsed);
+            }, 1000);
+            
             if (fileSourceRef.current) fileSourceRef.current.start(0);
           },
           onmessage: async (message: LiveServerMessage) => {
@@ -226,10 +222,16 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
               try {
                 const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+                
+                // Record the audio data for WAV export
+                if (audioRecorderRef.current) {
+                  const floatData = audioBufferToFloat32(audioBuffer);
+                  audioRecorderRef.current.addChunk(floatData);
+                }
+                
                 const sourceNode = ctx.createBufferSource();
                 sourceNode.buffer = audioBuffer;
                 sourceNode.connect(ctx.destination);
-                if (recordingDestRef.current) sourceNode.connect(recordingDestRef.current);
                 sourceNode.start(nextStartTimeRef.current);
                 nextStartTimeRef.current += audioBuffer.duration;
               } catch (e) {
@@ -237,27 +239,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
               }
             }
 
-            const outputText = message.serverContent?.outputTranscription?.text;
-            if (outputText) {
-              if (!currentOutputIdRef.current) currentOutputIdRef.current = `model-${Date.now()}`;
-              currentOutputTextRef.current += outputText;
-              updateTranscriptState(currentOutputIdRef.current, currentOutputTextRef.current, 'model', false);
-            }
-
-            const inputText = message.serverContent?.inputTranscription?.text;
-            if (inputText) {
-              if (!currentInputIdRef.current) currentInputIdRef.current = `user-${Date.now()}`;
-              currentInputTextRef.current += inputText;
-              updateTranscriptState(currentInputIdRef.current, currentInputTextRef.current, 'user', false);
-            }
-
             if (message.serverContent?.turnComplete) {
-              if (currentInputIdRef.current) updateTranscriptState(currentInputIdRef.current, currentInputTextRef.current, 'user', true);
-              if (currentOutputIdRef.current) updateTranscriptState(currentOutputIdRef.current, currentOutputTextRef.current, 'model', true);
-              currentInputIdRef.current = '';
-              currentInputTextRef.current = '';
-              currentOutputIdRef.current = '';
-              currentOutputTextRef.current = '';
               nextStartTimeRef.current = 0;
             }
           },
@@ -274,12 +256,11 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
 
       sessionPromiseRef.current = sessionPromise;
 
-      // REDUCED BUFFER SIZE FOR LOWER LATENCY (512 or 1024)
+      // Audio processor for VAD and sending to API
       const processor = inputCtx.createScriptProcessor(1024, 1, 1);
       processorRef.current = processor;
 
       const vadState = { hangover: 0, isActive: false };
-      // OPTIMIZED HANGOVER: 8 frames (~500ms) for snappy voice changing
       const HANGOVER_FRAMES = 8;
 
       processor.onaudioprocess = (e) => {
@@ -327,7 +308,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
       setStatus('error');
       disconnect();
     }
-  }, [apiKey, disconnect]);
+  }, [apiKey, disconnect, downloadUrl]);
 
   return {
     connect,
@@ -339,6 +320,6 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.01 }: UseGeminiLiveProp
     inputVolume,
     isVadActive,
     downloadUrl,
-    transcripts
+    recordingDuration
   };
 };
