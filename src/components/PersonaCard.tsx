@@ -47,3 +47,4 @@ const PersonaCard: React.FC<PersonaCardProps> = ({ persona, isSelected, onClick,
 };
 
 export default PersonaCard;
+ 
