@@ -4,9 +4,15 @@ import { Persona, LanguageCode } from './types';
 import PersonaCard from './components/PersonaCard';
 import { useGeminiLive } from './hooks/useGeminiLive';
 import AudioVisualizer from './components/AudioVisualizer';
-import TranscriptPanel from './components/TranscriptPanel';
 
 type InputMode = 'mic' | 'file';
+
+// Format duration as MM:SS
+const formatDuration = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
 
 const App: React.FC = () => {
   const [selectedPersona, setSelectedPersona] = useState<Persona>(PERSONAS[0]);
@@ -15,7 +21,6 @@ const App: React.FC = () => {
   const [showCallGuide, setShowCallGuide] = useState(false);
   const [vadThreshold, setVadThreshold] = useState(DEFAULT_VAD_THRESHOLD);
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>(DEFAULT_LANGUAGE);
-  const [showTranscript, setShowTranscript] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const apiKey = process.env.API_KEY || '';
@@ -29,7 +34,7 @@ const App: React.FC = () => {
     mediaStream,
     isVadActive,
     downloadUrl,
-    transcripts
+    recordingDuration
   } = useGeminiLive({ apiKey, vadThreshold });
 
   const handleToggleConnection = () => {
@@ -61,16 +66,15 @@ const App: React.FC = () => {
     }
   };
 
+  // Generate filename with timestamp
+  const getDownloadFilename = () => {
+    const now = new Date();
+    const timestamp = now.toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    return `voice-morph-${selectedPersona.id}-${timestamp}.wav`;
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center p-4 md:p-8 relative overflow-x-hidden">
-
-      {showTranscript && (
-        <TranscriptPanel
-          transcripts={transcripts}
-          isOpen={showTranscript}
-          onClose={() => setShowTranscript(false)}
-        />
-      )}
 
       {isApiKeyMissing && (
         <div className="fixed top-0 left-0 w-full bg-red-600 text-white text-center py-2 z-50 shadow-lg font-medium">
@@ -81,19 +85,19 @@ const App: React.FC = () => {
       <header className={`w-full max-w-5xl mb-8 flex flex-col md:flex-row justify-between items-center border-b border-zinc-900 pb-6 gap-4 ${isApiKeyMissing ? 'mt-8' : ''}`}>
         <div className="md:pr-4">
           <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-indigo-500 bg-clip-text text-transparent">
-            Gemini Voice Morph
+            Voice Morph
           </h1>
           <div className="flex items-center gap-2 mt-1">
-            <p className="text-zinc-500">Real-time Pro-Grade Transformation</p>
+            <p className="text-zinc-500">Real-time AI Voice Transformation</p>
             <span className="bg-blue-900/30 text-blue-400 text-[10px] px-2 py-0.5 rounded border border-blue-800 font-mono">
               LIVE
             </span>
           </div>
         </div>
         <div className="flex items-center gap-4 flex-wrap justify-center">
-          {/* Language Selector with Label */}
+          {/* Language Selector */}
           <div className="flex flex-col gap-1">
-            <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider ml-1">Input Language</label>
+            <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider ml-1">Language</label>
             <div className="relative group">
               <select
                 value={selectedLanguage}
@@ -103,7 +107,6 @@ const App: React.FC = () => {
                 }}
                 disabled={status === 'connecting'}
                 className="appearance-none bg-zinc-900 border border-zinc-800 text-zinc-300 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:border-blue-500 cursor-pointer hover:bg-zinc-800 transition-colors"
-                title="Select the language you will speak for 200% transcription accuracy"
               >
                 {SUPPORTED_LANGUAGES.map(lang => (
                   <option key={lang.code} value={lang.code}>
@@ -117,6 +120,7 @@ const App: React.FC = () => {
             </div>
           </div>
 
+          {/* Source Selector */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider ml-1">Source</label>
             <div className="bg-zinc-900 p-1 rounded-lg flex border border-zinc-800">
@@ -125,27 +129,17 @@ const App: React.FC = () => {
                 disabled={isApiKeyMissing}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'mic' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'} ${isApiKeyMissing ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                Mic
+                🎙 Mic
               </button>
               <button
                 onClick={() => { setInputMode('file'); disconnect(); }}
                 disabled={isApiKeyMissing}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'file' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'} ${isApiKeyMissing ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                File
+                📁 File
               </button>
             </div>
           </div>
-
-          {!showTranscript && (
-            <button
-              onClick={() => setShowTranscript(true)}
-              className="mt-5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-lg border border-zinc-700 transition-colors"
-              title="Show Transcript"
-            >
-              📜
-            </button>
-          )}
         </div>
       </header>
 
@@ -158,10 +152,19 @@ const App: React.FC = () => {
                 <h2 className="text-xl font-semibold flex items-center gap-2">
                   {status === 'connected' ? '🔴 Live' : 'Preview'}
                 </h2>
-                {status === 'connected' && inputMode === 'mic' && (
-                  <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-mono tracking-wide transition-all ${isVadActive ? 'bg-green-500/10 border-green-500/50 text-green-400' : 'bg-zinc-800 border-zinc-700 text-zinc-500'}`}>
-                    <div className={`w-1.5 h-1.5 rounded-full ${isVadActive ? 'bg-green-400 animate-pulse' : 'bg-zinc-600'}`}></div>
-                    {isVadActive ? 'DETECTING' : 'WAITING'}
+                {status === 'connected' && (
+                  <div className="flex items-center gap-2">
+                    {inputMode === 'mic' && (
+                      <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-mono tracking-wide transition-all ${isVadActive ? 'bg-green-500/10 border-green-500/50 text-green-400' : 'bg-zinc-800 border-zinc-700 text-zinc-500'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${isVadActive ? 'bg-green-400 animate-pulse' : 'bg-zinc-600'}`}></div>
+                        {isVadActive ? 'DETECTING' : 'WAITING'}
+                      </div>
+                    )}
+                    {/* Recording Duration */}
+                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/50 text-red-400 text-[10px] font-mono">
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></div>
+                      {formatDuration(recordingDuration)}
+                    </div>
                   </div>
                 )}
               </div>
@@ -210,8 +213,8 @@ const App: React.FC = () => {
                 <div
                   onClick={() => !isApiKeyMissing && fileInputRef.current?.click()}
                   className={`w-full h-32 border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all group ${isApiKeyMissing
-                      ? 'border-zinc-800 cursor-not-allowed opacity-50'
-                      : 'border-zinc-700 cursor-pointer hover:border-blue-500 hover:bg-zinc-800/50'
+                    ? 'border-zinc-800 cursor-not-allowed opacity-50'
+                    : 'border-zinc-700 cursor-pointer hover:border-blue-500 hover:bg-zinc-800/50'
                     }`}
                 >
                   <input
@@ -248,7 +251,7 @@ const App: React.FC = () => {
 
                   {inputMode === 'mic' && (
                     <div className="absolute -bottom-8 w-64 flex items-center gap-3 bg-zinc-900/80 px-4 py-2 rounded-full border border-zinc-800 backdrop-blur">
-                      <span className="text-[10px] text-zinc-400 uppercase font-bold whitespace-nowrap">Gate Thresh</span>
+                      <span className="text-[10px] text-zinc-400 uppercase font-bold whitespace-nowrap">Gate</span>
                       <input
                         type="range"
                         min="0.001"
@@ -268,9 +271,9 @@ const App: React.FC = () => {
 
             <div className="text-center h-8 mt-2 flex flex-col items-center justify-center">
               {status === 'connected' && (
-                <p className="text-sm text-zinc-500 animate-pulse font-mono flex items-center gap-2">
+                <p className="text-sm text-zinc-500 font-mono flex items-center gap-2">
                   <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                  {inputMode === 'mic' ? 'RECORDING & TRANSCRIBING...' : 'PROCESSING & TRANSCRIBING...'}
+                  {inputMode === 'mic' ? 'RECORDING...' : 'PROCESSING...'}
                 </p>
               )}
               {status === 'connecting' && (
@@ -280,30 +283,56 @@ const App: React.FC = () => {
               )}
               {status === 'disconnected' && !isApiKeyMissing && !downloadUrl && (
                 <p className="text-sm text-zinc-600">
-                  {inputMode === 'mic' ? 'Ready.' : selectedFile ? 'Ready to process.' : 'Select file.'}
+                  {inputMode === 'mic' ? 'Ready to record.' : selectedFile ? 'Ready to process.' : 'Select an audio file.'}
                 </p>
               )}
               {downloadUrl && status === 'disconnected' && (
                 <p className="text-sm text-green-400 animate-in fade-in slide-in-from-top-1">
-                  Session recorded.
+                  ✓ Recording saved! Download below.
                 </p>
               )}
             </div>
           </div>
 
+          {/* Download Section - Enhanced */}
           {downloadUrl && status === 'disconnected' && (
-            <a
-              href={downloadUrl}
-              download={`morph-session-${new Date().getTime()}.webm`}
-              className="w-full py-4 rounded-xl text-md font-bold tracking-wide transition-all duration-300 bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-white flex items-center justify-center gap-2 shadow-lg animate-in fade-in slide-in-from-top-2"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-              </svg>
-              Download Audio Recording
-            </a>
+            <div className="bg-gradient-to-r from-green-900/20 to-emerald-900/20 border border-green-700/50 rounded-2xl p-6 animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-green-400">Recording Complete!</h3>
+                    <p className="text-xs text-zinc-400">WAV format • Works on all devices & WhatsApp</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-zinc-500">Duration</p>
+                  <p className="text-lg font-mono text-green-400">{formatDuration(recordingDuration)}</p>
+                </div>
+              </div>
+              
+              <a
+                href={downloadUrl}
+                download={getDownloadFilename()}
+                className="w-full py-4 rounded-xl text-md font-bold tracking-wide transition-all duration-300 bg-green-600 hover:bg-green-500 text-white flex items-center justify-center gap-3 shadow-lg shadow-green-900/30"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+                Download WAV Audio
+              </a>
+              
+              <p className="text-center text-xs text-zinc-500 mt-3">
+                ✓ Mobile Compatible • ✓ WhatsApp Ready • ✓ All Media Players
+              </p>
+            </div>
           )}
 
+          {/* Main Action Button */}
           <button
             onClick={handleToggleConnection}
             disabled={isApiKeyMissing || status === 'connecting' || (inputMode === 'file' && !selectedFile)}
@@ -329,7 +358,7 @@ const App: React.FC = () => {
               </>
             ) : status === 'connected' ? (
               <>
-                <span>⏹</span> Stop & Save
+                <span>⏹</span> Stop & Save Recording
               </>
             ) : (
               <>
@@ -350,9 +379,10 @@ const App: React.FC = () => {
 
         </div>
 
+        {/* Persona Selection Panel */}
         <div className="flex flex-col gap-4">
-          <h3 className="text-lg font-semibold text-zinc-400 px-1">Select Persona</h3>
-          <div className={`grid grid-cols-1 gap-3 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar ${isApiKeyMissing ? 'opacity-50 pointer-events-none' : ''}`}>
+          <h3 className="text-lg font-semibold text-zinc-400 px-1">Select Voice</h3>
+          <div className={`grid grid-cols-1 gap-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar ${isApiKeyMissing ? 'opacity-50 pointer-events-none' : ''}`}>
             {PERSONAS.map(persona => (
               <PersonaCard
                 key={persona.id}
@@ -364,11 +394,21 @@ const App: React.FC = () => {
             ))}
           </div>
 
-          <div className="bg-blue-900/10 border border-blue-900/30 p-4 rounded-xl mt-4">
-            <h4 className="text-blue-400 text-sm font-bold mb-1">Advanced Audio Engine</h4>
+          {/* Info Box */}
+          <div className="bg-blue-900/10 border border-blue-900/30 p-4 rounded-xl mt-2">
+            <h4 className="text-blue-400 text-sm font-bold mb-1">💡 How it works</h4>
             <p className="text-xs text-blue-300/70 leading-relaxed">
-              Powered by Gemini Advanced Native Audio. The AI Re-generates your voice in real-time,
-              maintaining the correct accent patterns for your selected language.
+              Select a voice persona, click Start, and speak into your microphone. 
+              AI transforms your voice in real-time. Download as WAV file when done.
+            </p>
+          </div>
+
+          {/* Format Info */}
+          <div className="bg-green-900/10 border border-green-900/30 p-4 rounded-xl">
+            <h4 className="text-green-400 text-sm font-bold mb-1">📱 Universal Format</h4>
+            <p className="text-xs text-green-300/70 leading-relaxed">
+              Audio saves as WAV format - works everywhere: iPhone, Android, WhatsApp, 
+              all media players. No conversion needed!
             </p>
           </div>
         </div>
@@ -376,8 +416,8 @@ const App: React.FC = () => {
       </main>
 
       <footer className="w-full max-w-5xl mt-12 pt-8 border-t border-zinc-900 text-center text-zinc-600 text-sm">
-        <p>Gemini Voice Morph • Real-time AI Voice Transformation</p>
-        <p className="text-xs mt-1 text-zinc-700">Powered by Google Gemini Native Audio API</p>
+        <p>Voice Morph • Real-time AI Voice Transformation</p>
+        <p className="text-xs mt-1 text-zinc-700">Powered by Google Gemini Native Audio</p>
       </footer>
     </div>
   );
