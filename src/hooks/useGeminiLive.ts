@@ -17,18 +17,19 @@ interface UseGeminiLiveReturn {
   mediaStream: MediaStream | null;
   inputVolume: number;
   isVadActive: boolean;
-  audioBlob: Blob | null;
+  originalAudioBlob: Blob | null;
+  transformedAudioBlob: Blob | null;
   recordingDuration: number;
 }
 
 /**
- * Ring buffer to store pre-trigger audio (captures start of words)
+ * Pre-buffer for capturing word starts
  */
 class PreBuffer {
   private buffers: Float32Array[] = [];
   private maxBuffers: number;
 
-  constructor(maxBuffers: number = 8) {
+  constructor(maxBuffers: number = 10) {
     this.maxBuffers = maxBuffers;
   }
 
@@ -36,8 +37,6 @@ class PreBuffer {
     const copy = new Float32Array(data.length);
     copy.set(data);
     this.buffers.push(copy);
-    
-    // Keep only last N buffers
     while (this.buffers.length > this.maxBuffers) {
       this.buffers.shift();
     }
@@ -54,17 +53,39 @@ class PreBuffer {
   }
 }
 
-export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLiveProps): UseGeminiLiveReturn => {
+/**
+ * Language-specific instructions for better natural voice output
+ */
+const getLanguageInstruction = (lang: LanguageCode): string => {
+  const instructions: Record<LanguageCode, string> = {
+    en: 'Speak in natural English with perfect pronunciation and human-like flow.',
+    hi: 'Speak in natural Hindi (हिंदी) with authentic native pronunciation and natural rhythm.',
+    ur: 'Speak in beautiful Urdu (اردو) with elegant Lahore/Karachi accent and poetic flow.',
+    ar: 'Speak in authentic Arabic (العربية) with proper makhraj and natural Middle Eastern rhythm.',
+    es: 'Speak in natural Spanish (Español) with authentic pronunciation and melodic flow.',
+    fr: 'Speak in natural French (Français) with proper liaison and elegant rhythm.',
+    de: 'Speak in natural German (Deutsch) with proper pronunciation and clear articulation.',
+    zh: 'Speak in natural Mandarin Chinese (中文) with correct tones and natural rhythm.',
+    ja: 'Speak in natural Japanese (日本語) with proper pitch accent and polite tone.',
+    ko: 'Speak in natural Korean (한국어) with authentic pronunciation and natural speech patterns.',
+    pt: 'Speak in natural Portuguese (Português) with authentic Brazilian/European pronunciation.',
+    ru: 'Speak in natural Russian (Русский) with authentic pronunciation and natural intonation.',
+  };
+  return instructions[lang] || instructions.en;
+};
+
+export const useGeminiLive = ({ apiKey, vadThreshold = 0.006 }: UseGeminiLiveProps): UseGeminiLiveReturn => {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   const [inputVolume, setInputVolume] = useState(0);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [isVadActive, setIsVadActive] = useState(false);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [originalAudioBlob, setOriginalAudioBlob] = useState<Blob | null>(null);
+  const [transformedAudioBlob, setTransformedAudioBlob] = useState<Blob | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
 
-  // Audio context refs
+  // Audio contexts
   const inputCtxRef = useRef<AudioContext | null>(null);
   const outputCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -74,15 +95,15 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
   const sessionRef = useRef<Promise<any> | null>(null);
   const fileSourceRef = useRef<AudioBufferSourceNode | null>(null);
   
-  // Recording
-  const recorderRef = useRef<AudioRecorder | null>(null);
+  // Two recorders
+  const originalRecorderRef = useRef<AudioRecorder | null>(null);
+  const transformedRecorderRef = useRef<AudioRecorder | null>(null);
+  
   const startTimeRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Pre-buffer for capturing start of words (CRITICAL for no missing audio)
   const preBufferRef = useRef<PreBuffer | null>(null);
 
-  // VAD state refs
+  // VAD state
   const vadRef = useRef(vadThreshold);
   const vadActiveRef = useRef(false);
   const hangoverRef = useRef(0);
@@ -98,34 +119,39 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
   }, []);
 
   /**
-   * Disconnect and cleanup
+   * Disconnect and save recordings
    */
   const disconnect = useCallback(async () => {
-    // Stop timer
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
 
-    // Get recorded audio
-    if (recorderRef.current) {
-      const blob = recorderRef.current.stop();
+    // Save original voice
+    if (originalRecorderRef.current) {
+      const blob = originalRecorderRef.current.stop();
       if (blob && blob.size > 44) {
-        setAudioBlob(blob);
+        setOriginalAudioBlob(blob);
       }
-      recorderRef.current = null;
+      originalRecorderRef.current = null;
     }
 
-    // Clear pre-buffer
+    // Save transformed voice
+    if (transformedRecorderRef.current) {
+      const blob = transformedRecorderRef.current.stop();
+      if (blob && blob.size > 44) {
+        setTransformedAudioBlob(blob);
+      }
+      transformedRecorderRef.current = null;
+    }
+
     if (preBufferRef.current) {
       preBufferRef.current.clear();
       preBufferRef.current = null;
     }
 
-    // Clear session
     sessionRef.current = null;
 
-    // Stop media
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(t => t.stop());
       mediaStreamRef.current = null;
@@ -157,7 +183,6 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
       outputCtxRef.current = null;
     }
 
-    // Reset state
     vadActiveRef.current = false;
     hangoverRef.current = 0;
     setStatus('disconnected');
@@ -167,7 +192,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
   }, []);
 
   /**
-   * Connect and start processing
+   * Connect and start voice transformation
    */
   const connect = useCallback(async (persona: Persona, file?: File, language: LanguageCode = 'en') => {
     if (!apiKey) {
@@ -176,7 +201,8 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
     }
 
     try {
-      setAudioBlob(null);
+      setOriginalAudioBlob(null);
+      setTransformedAudioBlob(null);
       setRecordingDuration(0);
       setError(null);
 
@@ -185,7 +211,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
       setStatus('connecting');
       setActivePersona(persona);
 
-      // Create contexts
+      // Create high-quality audio contexts
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const inputCtx = new AudioCtx({ sampleRate: 16000 });
       const outputCtx = new AudioCtx({ sampleRate: 24000 });
@@ -194,18 +220,17 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
       outputCtxRef.current = outputCtx;
       nextPlayTimeRef.current = 0;
 
-      // Initialize recorder
-      recorderRef.current = new AudioRecorder(24000);
+      // Initialize recorders with matching sample rates
+      originalRecorderRef.current = new AudioRecorder(16000);
+      transformedRecorderRef.current = new AudioRecorder(24000);
 
-      // Initialize pre-buffer (stores ~250ms of audio before voice detected)
-      // This ensures we NEVER miss the start of words
-      preBufferRef.current = new PreBuffer(8);
+      // Larger pre-buffer for better word capture (captures ~300ms before voice)
+      preBufferRef.current = new PreBuffer(10);
 
-      // Reset VAD state
       vadActiveRef.current = false;
       hangoverRef.current = 0;
 
-      // Setup source
+      // Setup audio source
       let source: AudioNode;
       let visualizerStream: MediaStream;
 
@@ -221,14 +246,14 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
         bufSrc.connect(dest);
         visualizerStream = dest.stream;
       } else {
-        // Request high-quality audio capture
+        // Request highest quality microphone input
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             sampleRate: 16000,
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
-            channelCount: 1
+            channelCount: 1,
           }
         });
         mediaStreamRef.current = stream;
@@ -239,9 +264,24 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
       setAudioStream(visualizerStream);
       sourceRef.current = source;
 
-      // Connect to Gemini
+      // Build enhanced system prompt for natural human voice
+      const languageInstruction = getLanguageInstruction(language);
+      const systemPrompt = `${persona.systemInstruction}
+
+=== CURRENT SESSION LANGUAGE ===
+${languageInstruction}
+
+=== FINAL REMINDER ===
+You are a HUMAN VOICE ACTOR performing live.
+- ONLY repeat exactly what user says
+- NEVER add any words, greetings, or acknowledgments
+- Sound 100% natural and human
+- Match their exact emotion and tone
+- If they say nothing, you say NOTHING
+`;
+
+      // Connect to Gemini with optimized settings
       const ai = new GoogleGenAI({ apiKey });
-      const systemPrompt = `${persona.systemInstruction}\nShadow the user's voice in ${language.toUpperCase()}.`;
 
       const session = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -257,7 +297,9 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
         callbacks: {
           onopen: () => {
             setStatus('connected');
-            recorderRef.current?.start();
+            
+            originalRecorderRef.current?.start();
+            transformedRecorderRef.current?.start();
             
             startTimeRef.current = Date.now();
             timerRef.current = setInterval(() => {
@@ -276,14 +318,14 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
               try {
                 const buffer = await decodeAudioData(decode(audioData), ctx, 24000, 1);
                 
-                // Record output
-                if (recorderRef.current) {
-                  recorderRef.current.addChunk(audioBufferToFloat32(buffer));
+                // Record transformed voice
+                if (transformedRecorderRef.current) {
+                  transformedRecorderRef.current.addChunk(audioBufferToFloat32(buffer));
                 }
                 
-                // Play audio
+                // Smooth audio playback scheduling
                 const now = ctx.currentTime;
-                const startTime = Math.max(nextPlayTimeRef.current, now);
+                const startTime = Math.max(nextPlayTimeRef.current, now + 0.01);
                 
                 const srcNode = ctx.createBufferSource();
                 srcNode.buffer = buffer;
@@ -313,22 +355,13 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
 
       sessionRef.current = session;
 
-      // CRITICAL: Audio processor with smart VAD
-      // Buffer size 256 = lowest latency while maintaining quality
+      // Audio processor with optimized buffer size
       const processor = inputCtx.createScriptProcessor(256, 1, 1);
       processorRef.current = processor;
 
-      /**
-       * HANGOVER_FRAMES: How long to keep transmitting after voice stops
-       * Higher = no cut words, but slight delay
-       * 25 frames @ 256 samples @ 16kHz = ~400ms hangover
-       * This ensures we NEVER cut off the end of words
-       */
-      const HANGOVER_FRAMES = 25;
+      // Longer hangover for complete word capture (~500ms)
+      const HANGOVER_FRAMES = 30;
 
-      /**
-       * Send audio data to Gemini
-       */
       const sendAudio = (data: Float32Array) => {
         if (sessionRef.current) {
           const pcm = createPcmBlob(data, inputCtx.sampleRate);
@@ -341,7 +374,7 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         
-        // Calculate RMS volume (every sample for accuracy)
+        // Calculate RMS with full accuracy
         let sum = 0;
         for (let i = 0; i < input.length; i++) {
           sum += input[i] * input[i];
@@ -349,60 +382,64 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
         const rms = Math.sqrt(sum / input.length);
         setInputVolume(rms);
 
-        // File mode: always transmit everything
+        // File mode: always send
         if (file) {
+          if (originalRecorderRef.current) {
+            originalRecorderRef.current.addChunk(input);
+          }
           sendAudio(input);
           setIsVadActive(true);
           return;
         }
 
-        // Mic mode: Smart VAD with pre-buffer
+        // Mic mode: Smart VAD
         const threshold = vadRef.current;
         const isVoice = rms > threshold;
 
         if (isVoice) {
-          // Voice detected!
-          
           if (!vadActiveRef.current) {
-            // TRANSITION: Silence -> Voice
-            // Send ALL pre-buffered audio first (this captures start of words!)
             vadActiveRef.current = true;
             setIsVadActive(true);
             
+            // Send ALL pre-buffered audio (captures word starts)
             const preBuffered = preBufferRef.current?.flush() || [];
             for (const chunk of preBuffered) {
+              if (originalRecorderRef.current) {
+                originalRecorderRef.current.addChunk(chunk);
+              }
               sendAudio(chunk);
             }
           }
           
-          // Reset hangover counter
           hangoverRef.current = HANGOVER_FRAMES;
           
-          // Send current audio
+          // Record and send
+          if (originalRecorderRef.current) {
+            originalRecorderRef.current.addChunk(input);
+          }
           sendAudio(input);
           
         } else {
-          // No voice detected
-          
           if (vadActiveRef.current) {
-            // Was active, check hangover
             if (hangoverRef.current > 0) {
-              // Still in hangover period - keep sending
               hangoverRef.current--;
+              // Continue recording/sending during hangover
+              if (originalRecorderRef.current) {
+                originalRecorderRef.current.addChunk(input);
+              }
               sendAudio(input);
             } else {
-              // Hangover expired - stop transmitting
               vadActiveRef.current = false;
               setIsVadActive(false);
             }
           } else {
-            // Not active - store in pre-buffer for next word start
+            // Store in pre-buffer
             preBufferRef.current?.push(input);
           }
         }
       };
 
-      // Connect (muted output)
+      // Connect (muted output to prevent feedback)
       source.connect(processor);
       const gain = inputCtx.createGain();
       gain.gain.value = 0;
@@ -425,7 +462,8 @@ export const useGeminiLive = ({ apiKey, vadThreshold = 0.008 }: UseGeminiLivePro
     mediaStream: audioStream,
     inputVolume,
     isVadActive,
-    audioBlob,
+    originalAudioBlob,
+    transformedAudioBlob,
     recordingDuration
   };
 };
