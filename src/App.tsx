@@ -9,7 +9,7 @@ import { formatDuration, formatSize } from './utils/audio';
 type InputMode = 'mic' | 'file';
 
 /**
- * Audio Player Component - Reusable for both original and transformed audio
+ * Audio Player Component
  */
 interface AudioPlayerProps {
   blob: Blob;
@@ -27,7 +27,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Create URL when blob changes
   useEffect(() => {
     if (blob) {
       const url = URL.createObjectURL(blob);
@@ -38,7 +37,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
     }
   }, [blob]);
 
-  // Audio events
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -97,13 +95,11 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
     : 'bg-green-600 hover:bg-green-500 shadow-green-900/30';
 
   const textClass = colorClass === 'blue' ? 'text-blue-400' : 'text-green-400';
-  const sliderThumb = colorClass === 'blue' ? 'bg-blue-500' : 'bg-green-500';
 
   return (
     <div className={`bg-gradient-to-br ${bgClass} border rounded-xl p-4`}>
       {audioUrl && <audio ref={audioRef} src={audioUrl} preload="metadata" />}
       
-      {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-xl">{icon}</span>
@@ -118,9 +114,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
         </div>
       </div>
 
-      {/* Player Controls */}
       <div className="flex items-center gap-3 mb-3">
-        {/* Play/Pause */}
         <button
           onClick={togglePlay}
           className={`w-10 h-10 ${btnClass} rounded-full flex items-center justify-center transition-all shadow-lg`}
@@ -137,7 +131,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
           )}
         </button>
 
-        {/* Progress */}
         <div className="flex-1">
           <input
             type="range"
@@ -146,7 +139,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
             step="0.1"
             value={currentTime}
             onChange={handleSeek}
-            className={`w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:${sliderThumb} [&::-webkit-slider-thumb]:rounded-full`}
+            className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full"
           />
           <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
             <span>{formatDuration(currentTime)}</span>
@@ -155,7 +148,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ blob, title, subtitle, icon, 
         </div>
       </div>
 
-      {/* Download Button */}
       <button
         onClick={handleDownload}
         className={`w-full py-2.5 ${btnClass} text-white font-medium rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg text-sm`}
@@ -197,19 +189,23 @@ const App: React.FC = () => {
     recordingDuration
   } = useGeminiLive({ apiKey, vadThreshold });
 
-  // Check if we have any recordings
   const hasRecordings = originalAudioBlob || transformedAudioBlob;
 
-  const handleToggleConnection = () => {
-    if (status === 'connected' || status === 'connecting') {
-      disconnect();
-    } else {
-      if (inputMode === 'file' && !selectedFile) {
-        alert("Please select an audio file first.");
-        return;
-      }
-      connect(selectedPersona, inputMode === 'file' ? selectedFile! : undefined, selectedLanguage);
+  const handleStartRecording = () => {
+    if (inputMode === 'file' && !selectedFile) {
+      alert("Please select an audio file first.");
+      return;
     }
+    connect(selectedPersona, inputMode === 'file' ? selectedFile! : undefined, selectedLanguage);
+  };
+
+  const handleStopRecording = () => {
+    disconnect();
+  };
+
+  const handleNewRecording = () => {
+    // This will start a new recording
+    connect(selectedPersona, inputMode === 'file' ? selectedFile! : undefined, selectedLanguage);
   };
 
   const handlePersonaSelect = async (persona: Persona) => {
@@ -229,7 +225,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Generate filenames
   const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
   const originalFilename = `original-voice-${timestamp}.wav`;
   const transformedFilename = `transformed-${selectedPersona.id}-${timestamp}.wav`;
@@ -253,7 +248,6 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-4 flex-wrap justify-center">
-          {/* Language */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-zinc-500 font-bold uppercase">Language</label>
             <select
@@ -262,8 +256,8 @@ const App: React.FC = () => {
                 setSelectedLanguage(e.target.value as LanguageCode);
                 if (status === 'connected') disconnect();
               }}
-              disabled={status === 'connecting'}
-              className="bg-zinc-900 border border-zinc-800 text-zinc-300 py-2 px-3 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+              disabled={status === 'connecting' || status === 'connected'}
+              className="bg-zinc-900 border border-zinc-800 text-zinc-300 py-2 px-3 rounded-lg text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
             >
               {SUPPORTED_LANGUAGES.map(lang => (
                 <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
@@ -271,21 +265,20 @@ const App: React.FC = () => {
             </select>
           </div>
 
-          {/* Source */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-zinc-500 font-bold uppercase">Source</label>
             <div className="bg-zinc-900 p-1 rounded-lg flex border border-zinc-800">
               <button
-                onClick={() => { setInputMode('mic'); disconnect(); }}
-                disabled={isApiKeyMissing}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'mic' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                onClick={() => { setInputMode('mic'); if (status === 'connected') disconnect(); }}
+                disabled={isApiKeyMissing || status === 'connected'}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'mic' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'} disabled:opacity-50`}
               >
                 🎙 Mic
               </button>
               <button
-                onClick={() => { setInputMode('file'); disconnect(); }}
-                disabled={isApiKeyMissing}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'file' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}
+                onClick={() => { setInputMode('file'); if (status === 'connected') disconnect(); }}
+                disabled={isApiKeyMissing || status === 'connected'}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${inputMode === 'file' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'} disabled:opacity-50`}
               >
                 📁 File
               </button>
@@ -300,26 +293,37 @@ const App: React.FC = () => {
         {/* Left Panel */}
         <div className="lg:col-span-2 flex flex-col gap-5">
           
-          {/* Visualizer */}
-          <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-5 shadow-2xl relative overflow-hidden min-h-[240px] flex flex-col">
+          {/* Recording Panel */}
+          <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-5 shadow-2xl relative overflow-hidden flex flex-col">
             
             {/* Header */}
-            <div className="flex justify-between items-center mb-3">
+            <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-semibold">
-                  {status === 'connected' ? '🔴 Recording' : 'Ready'}
-                </h2>
-                {status === 'connected' && (
+                {status === 'connected' ? (
                   <>
-                    <span className="px-2 py-1 bg-red-500/20 text-red-400 text-xs font-mono rounded-full border border-red-500/30">
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-3 w-3">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                      </span>
+                      <span className="text-lg font-semibold text-white">Recording</span>
+                    </div>
+                    <span className="px-3 py-1 bg-red-500/20 text-red-400 text-sm font-mono rounded-full border border-red-500/30 font-bold">
                       {formatDuration(recordingDuration)}
                     </span>
                     {inputMode === 'mic' && (
-                      <span className={`px-2 py-1 text-xs font-mono rounded-full border ${isVadActive ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
-                        {isVadActive ? '● Voice' : '○ Silent'}
+                      <span className={`px-2 py-1 text-xs font-mono rounded-full border transition-all ${isVadActive ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
+                        {isVadActive ? '● Speaking' : '○ Silent'}
                       </span>
                     )}
                   </>
+                ) : hasRecordings ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-green-400 text-xl">✓</span>
+                    <span className="text-lg font-semibold text-green-400">Recording Complete</span>
+                  </div>
+                ) : (
+                  <span className="text-lg font-semibold text-zinc-400">Ready to Record</span>
                 )}
               </div>
               <button
@@ -330,7 +334,7 @@ const App: React.FC = () => {
               </button>
             </div>
 
-            {/* Phone Guide */}
+            {/* Phone Guide Modal */}
             {showCallGuide && (
               <div className="absolute inset-0 z-20 bg-zinc-950/98 backdrop-blur p-5 flex flex-col items-center justify-center text-center">
                 <h3 className="text-lg font-bold mb-3">Use with Phone Calls</h3>
@@ -354,43 +358,26 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* Content */}
-            <div className="flex-1 flex flex-col items-center justify-center gap-3">
+            {/* Content Area */}
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 min-h-[180px]">
               
-              {/* File Upload */}
-              {inputMode === 'file' && status === 'disconnected' && !hasRecordings && (
-                <div
-                  onClick={() => !isApiKeyMissing && fileInputRef.current?.click()}
-                  className={`w-full h-24 border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer ${isApiKeyMissing ? 'border-zinc-800 opacity-50' : 'border-zinc-700 hover:border-blue-500 hover:bg-zinc-800/30'}`}
-                >
-                  <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="audio/*" className="hidden" disabled={isApiKeyMissing} />
-                  {selectedFile ? (
-                    <div className="text-center">
-                      <p className="text-blue-400 font-medium text-sm">{selectedFile.name}</p>
-                      <p className="text-zinc-500 text-xs">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+              {/* RECORDING STATE - Show visualizer and DONE button */}
+              {status === 'connected' && (
+                <>
+                  {/* Visualizer */}
+                  <div className="w-full">
+                    <div className={`transition-opacity ${!isVadActive && inputMode === 'mic' ? 'opacity-40' : 'opacity-100'}`}>
+                      <AudioVisualizer
+                        stream={mediaStream || undefined}
+                        isListening={true}
+                        accentColor="#3b82f6"
+                      />
                     </div>
-                  ) : (
-                    <div className="text-center text-zinc-500 text-sm">
-                      <p>Click to upload audio</p>
-                      <p className="text-xs mt-1">MP3, WAV, M4A</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Visualizer */}
-              {(inputMode === 'mic' || status === 'connected') && !hasRecordings && (
-                <div className="w-full">
-                  <div className={`transition-opacity ${!isVadActive && inputMode === 'mic' && status === 'connected' ? 'opacity-40' : 'opacity-100'}`}>
-                    <AudioVisualizer
-                      stream={mediaStream || undefined}
-                      isListening={status === 'connected' || !!mediaStream}
-                      accentColor={status === 'connected' ? '#3b82f6' : '#52525b'}
-                    />
                   </div>
-                  
+
+                  {/* Sensitivity Slider */}
                   {inputMode === 'mic' && (
-                    <div className="flex items-center gap-3 mt-3 bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-800 max-w-xs mx-auto">
+                    <div className="flex items-center gap-3 bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-800 max-w-xs">
                       <span className="text-[10px] text-zinc-500 uppercase font-bold">Sensitivity</span>
                       <input
                         type="range"
@@ -403,96 +390,143 @@ const App: React.FC = () => {
                       />
                     </div>
                   )}
+
+                  {/* Recording Info */}
+                  <p className="text-zinc-500 text-sm text-center">
+                    {inputMode === 'mic' 
+                      ? "Speak now... Click the button below when you're done." 
+                      : "Processing audio file..."}
+                  </p>
+
+                  {/* BIG DONE BUTTON */}
+                  <button
+                    onClick={handleStopRecording}
+                    className="w-full max-w-md py-5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white text-xl font-bold rounded-2xl flex items-center justify-center gap-3 transition-all shadow-lg shadow-green-900/30 mt-2"
+                  >
+                    <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                    I'm Done - Save Recording
+                  </button>
+                </>
+              )}
+
+              {/* IDLE STATE - Show start button */}
+              {status === 'disconnected' && !hasRecordings && (
+                <>
+                  {/* File Upload (if file mode) */}
+                  {inputMode === 'file' && (
+                    <div
+                      onClick={() => !isApiKeyMissing && fileInputRef.current?.click()}
+                      className={`w-full h-24 border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer ${isApiKeyMissing ? 'border-zinc-800 opacity-50' : 'border-zinc-700 hover:border-blue-500 hover:bg-zinc-800/30'}`}
+                    >
+                      <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="audio/*" className="hidden" disabled={isApiKeyMissing} />
+                      {selectedFile ? (
+                        <div className="text-center">
+                          <p className="text-blue-400 font-medium text-sm">{selectedFile.name}</p>
+                          <p className="text-zinc-500 text-xs">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                        </div>
+                      ) : (
+                        <div className="text-center text-zinc-500 text-sm">
+                          <p>Click to upload audio</p>
+                          <p className="text-xs mt-1">MP3, WAV, M4A</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Mic Preview (if mic mode) */}
+                  {inputMode === 'mic' && (
+                    <div className="w-full opacity-50">
+                      <AudioVisualizer
+                        stream={mediaStream || undefined}
+                        isListening={!!mediaStream}
+                        accentColor="#52525b"
+                      />
+                    </div>
+                  )}
+
+                  <p className="text-zinc-600 text-sm">
+                    {inputMode === 'mic' ? 'Click below to start recording' : selectedFile ? 'Ready to process' : 'Select an audio file'}
+                  </p>
+
+                  {/* START BUTTON */}
+                  <button
+                    onClick={handleStartRecording}
+                    disabled={isApiKeyMissing || (inputMode === 'file' && !selectedFile)}
+                    className={`w-full max-w-md py-5 text-xl font-bold rounded-2xl flex items-center justify-center gap-3 transition-all shadow-lg
+                      ${(inputMode === 'file' && !selectedFile) || isApiKeyMissing
+                        ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-900/30'
+                      }`}
+                  >
+                    <span className="text-2xl">{inputMode === 'mic' ? '🎙' : '▶'}</span>
+                    {inputMode === 'mic' ? 'Start Recording' : 'Process File'}
+                  </button>
+                </>
+              )}
+
+              {/* CONNECTING STATE */}
+              {status === 'connecting' && (
+                <div className="flex flex-col items-center gap-4">
+                  <svg className="animate-spin h-12 w-12 text-blue-500" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <p className="text-yellow-500 text-lg font-medium">Connecting...</p>
                 </div>
               )}
 
-              {/* Status */}
-              {status === 'connecting' && <p className="text-yellow-500 text-sm">Connecting...</p>}
-              {status === 'disconnected' && !hasRecordings && !isApiKeyMissing && (
-                <p className="text-zinc-600 text-sm">
-                  {inputMode === 'mic' ? 'Ready to record' : selectedFile ? 'Ready' : 'Select a file'}
-                </p>
+              {/* COMPLETED STATE - Show recordings */}
+              {status === 'disconnected' && hasRecordings && (
+                <div className="w-full space-y-4">
+                  {/* Success Message */}
+                  <div className="text-center mb-2">
+                    <p className="text-zinc-400 text-sm">Your recordings are ready! Play to preview, then download.</p>
+                  </div>
+
+                  {/* Audio Players */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {originalAudioBlob && (
+                      <AudioPlayer
+                        blob={originalAudioBlob}
+                        title="Your Original Voice"
+                        subtitle="Direct mic recording"
+                        icon="🎤"
+                        colorClass="blue"
+                        filename={originalFilename}
+                      />
+                    )}
+
+                    {transformedAudioBlob && (
+                      <AudioPlayer
+                        blob={transformedAudioBlob}
+                        title="Transformed Voice"
+                        subtitle={`${selectedPersona.name} • AI`}
+                        icon="🎭"
+                        colorClass="green"
+                        filename={transformedFilename}
+                      />
+                    )}
+                  </div>
+
+                  <p className="text-center text-xs text-zinc-600">
+                    ✓ WAV format • Works on Mobile, WhatsApp & All Players
+                  </p>
+
+                  {/* NEW RECORDING BUTTON */}
+                  <button
+                    onClick={handleNewRecording}
+                    className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-all border border-zinc-700"
+                  >
+                    <span>🎙</span> Start New Recording
+                  </button>
+                </div>
               )}
             </div>
           </div>
 
-          {/* Audio Players - Show after recording */}
-          {hasRecordings && status === 'disconnected' && (
-            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
-              
-              {/* Success Header */}
-              <div className="flex items-center gap-2 px-1">
-                <span className="text-green-400 text-lg">✓</span>
-                <h3 className="font-semibold text-green-400">Recording Complete!</h3>
-                <span className="text-zinc-500 text-sm">• Play & Download below</span>
-              </div>
-
-              {/* Two Audio Players Side by Side */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                
-                {/* Original Voice */}
-                {originalAudioBlob && (
-                  <AudioPlayer
-                    blob={originalAudioBlob}
-                    title="Your Original Voice"
-                    subtitle="Direct mic recording"
-                    icon="🎤"
-                    colorClass="blue"
-                    filename={originalFilename}
-                  />
-                )}
-
-                {/* Transformed Voice */}
-                {transformedAudioBlob && (
-                  <AudioPlayer
-                    blob={transformedAudioBlob}
-                    title="Transformed Voice"
-                    subtitle={`${selectedPersona.name} • AI Generated`}
-                    icon="🎭"
-                    colorClass="green"
-                    filename={transformedFilename}
-                  />
-                )}
-              </div>
-
-              <p className="text-center text-xs text-zinc-600">
-                ✓ WAV format • Works on Mobile, WhatsApp & All Players
-              </p>
-            </div>
-          )}
-
-          {/* Main Button */}
-          <button
-            onClick={handleToggleConnection}
-            disabled={isApiKeyMissing || status === 'connecting' || (inputMode === 'file' && !selectedFile)}
-            className={`
-              w-full py-4 rounded-xl text-lg font-bold transition-all shadow-lg flex items-center justify-center gap-3
-              ${status === 'connected'
-                ? 'bg-red-500/10 border border-red-500 text-red-500 hover:bg-red-500/20'
-                : (inputMode === 'file' && !selectedFile) || isApiKeyMissing
-                  ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white'
-              }
-              ${status === 'connecting' ? 'opacity-70 cursor-wait' : ''}
-            `}
-          >
-            {status === 'connecting' ? (
-              <>
-                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Connecting...
-              </>
-            ) : status === 'connected' ? (
-              <>⏹ Stop Recording</>
-            ) : hasRecordings ? (
-              <>🎙 New Recording</>
-            ) : (
-              <>{inputMode === 'mic' ? '🎙 Start Voice Changer' : '▶ Process File'}</>
-            )}
-          </button>
-
+          {/* Error */}
           {error && (
             <div className="bg-red-900/20 border border-red-900/50 text-red-400 p-3 rounded-lg text-sm text-center">
               ⚠️ {error}
@@ -504,23 +538,29 @@ const App: React.FC = () => {
         <div className="flex flex-col gap-4">
           <h3 className="text-lg font-semibold text-zinc-400">Select Voice</h3>
           
-          <div className={`grid grid-cols-1 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar ${isApiKeyMissing ? 'opacity-50 pointer-events-none' : ''}`}>
+          <div className={`grid grid-cols-1 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar ${isApiKeyMissing || status === 'connected' ? 'opacity-50 pointer-events-none' : ''}`}>
             {PERSONAS.map(persona => (
               <PersonaCard
                 key={persona.id}
                 persona={persona}
                 isSelected={selectedPersona.id === persona.id}
                 onClick={handlePersonaSelect}
-                disabled={status === 'connecting'}
+                disabled={status === 'connecting' || status === 'connected'}
               />
             ))}
           </div>
 
-          {/* Info */}
+          {/* Info Cards */}
           <div className="space-y-2 mt-2">
             <div className="bg-blue-900/10 border border-blue-900/30 p-3 rounded-xl">
-              <h4 className="text-blue-400 text-xs font-bold mb-1">⚡ How it Works</h4>
-              <p className="text-[11px] text-zinc-500">Speak → AI transforms your voice → Get both original & transformed recordings.</p>
+              <h4 className="text-blue-400 text-xs font-bold mb-1">💡 How to Use</h4>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                1. Select a voice persona<br/>
+                2. Click "Start Recording"<br/>
+                3. Speak into your mic<br/>
+                4. Click "I'm Done" when finished<br/>
+                5. Play & download your recordings
+              </p>
             </div>
             <div className="bg-green-900/10 border border-green-900/30 p-3 rounded-xl">
               <h4 className="text-green-400 text-xs font-bold mb-1">📱 Universal Format</h4>
